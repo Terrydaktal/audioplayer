@@ -4,11 +4,13 @@
 #include <string>
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 struct MediaInfo {
-    std::string container;
-    std::string codec;
-    std::string recommendedExt;
+    std::string container = "Probing...";
+    std::string codec = "Probing...";
+    std::string recommendedExt = "";
+    bool isReady = false;
 };
 
 class AudioPlayer {
@@ -25,18 +27,23 @@ public:
     double GetDuration() const;
     bool IsPlaying() const;
     bool IsLoading() const { return isLoading; }
+    
     const std::string& GetLoadedPath() const { return loadedPath; }
-    const MediaInfo& GetMediaInfo() const { return mediaInfo; }
+    MediaInfo GetMediaInfo();
 
 private:
-    void Unload();
+    void InternalUnload(); // Thread-safe internal cleanup
 
     struct InternalData;
     InternalData* data;
     std::string loadedPath;
     std::string tempFilePath;
+    
     MediaInfo mediaInfo;
+    std::mutex stateMutex; // Protects sound, path, and mediaInfo
+    
     std::atomic<bool> isLoading{false};
+    std::atomic<int> currentVersion{0};
     std::thread loadThread;
 };
 

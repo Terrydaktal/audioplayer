@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <SDL.h>
+#include <mutex>
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_sdlrenderer2.h"
@@ -139,6 +140,9 @@ int main(int argc, char* argv[]) {
 
     AudioPlayer player;
     TranscriptHandler transcript;
+    std::mutex transcriptMutex;
+    std::atomic<bool> transcriptLoading{false};
+
     std::vector<FontInfo> availableFonts = ScanFonts();
     std::string currentFontPath = ""; 
     float fontSize = 20.0f;
@@ -164,7 +168,6 @@ int main(int argc, char* argv[]) {
     bool showSearch = false;
     bool searchFocusPending = false;
 
-    // Selection state
     int selectStart = -1;
     int selectEnd = -1;
 
@@ -178,16 +181,18 @@ int main(int argc, char* argv[]) {
                 bool ctrl = (io.KeyCtrl);
                 if (ctrl && event.key.keysym.sym == SDLK_f) { showSearch = true; searchFocusPending = true; }
                 if (event.key.keysym.sym == SDLK_ESCAPE) showSearch = false;
-                
                 if (ctrl && event.key.keysym.sym == SDLK_c && selectStart != -1 && selectEnd != -1) {
                     std::string copyText = "";
                     int start = std::min(selectStart, selectEnd);
                     int end = std::max(selectStart, selectEnd);
+                    std::lock_guard<std::mutex> lock(transcriptMutex);
                     const auto& segs = transcript.GetSegments();
-                    for (int i = start; i <= end; ++i) {
-                        copyText += "[" + FormatTime(segs[i].start) + " -> " + FormatTime(segs[i].end) + "] " + segs[i].text + "\n";
+                    if (end < (int)segs.size()) {
+                        for (int i = start; i <= end; ++i) {
+                            copyText += "[" + FormatTime(segs[i].start) + " -> " + FormatTime(segs[i].end) + "] " + segs[i].text + "\n";
+                        }
+                        SDL_SetClipboardText(copyText.c_str());
                     }
-                    SDL_SetClipboardText(copyText.c_str());
                 }
             }
         }
@@ -214,7 +219,7 @@ int main(int argc, char* argv[]) {
         ImGui::SetNextWindowPos(ImVec2(0, 20));
         ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y - 20));
         ImGui::Begin("Audio Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
-        ImGui::PushFont(g_MainFont);
+        if (g_MainFont) ImGui::PushFont(g_MainFont);
 
         ImGui::BeginChild("Sidebar", ImVec2(300, 0), true);
         ImGui::Text("Audio Folder:");
@@ -234,14 +239,18 @@ int main(int argc, char* argv[]) {
                 if (ImGui::Selectable(filename.c_str(), currentLoadedFile == filename)) {
                     fs::path fullPath = fs::path(audioFolder) / filename;
                     if (player.Load(fullPath.string())) {
-                        transcript.Load(fullPath.string(), transcriptDir);
                         currentLoadedFile = filename;
-                        cropEnd = (float)player.GetDuration();
-                        cropStart = 0.0f;
-                        snprintf(cropStartBuf, sizeof(cropStartBuf), "%s", FormatTime(cropStart).c_str());
-                        snprintf(cropEndBuf, sizeof(cropEndBuf), "%s", FormatTime(cropEnd).c_str());
                         matchIndices.clear(); currentMatchIdx = -1; lastMatchIdx = -1; cropPathNeedsUpdate = true;
                         selectStart = -1; selectEnd = -1;
+                        
+                        transcriptLoading = true;
+                        std::string tDir = transcriptDir;
+                        std::string aPath = fullPath.string();
+                        std::thread([&transcript, &transcriptMutex, &transcriptLoading, aPath, tDir]() {
+                            std::lock_guard<std::mutex> lock(transcriptMutex);
+                            transcript.Load(aPath, tDir);
+                            transcriptLoading = false;
+                        }).detach();
                     }
                 }
             }
@@ -251,16 +260,27 @@ int main(int argc, char* argv[]) {
 
         ImGui::SameLine();
         ImGui::BeginGroup();
-        if (player.IsLoading()) { ImGui::Text("Loading and probing file..."); }
-        else if (!currentLoadedFile.empty()) {
+        
+        if (!currentLoadedFile.empty()) {
+            if (player.IsLoading() || transcriptLoading) {
+                ImGui::TextColored(ImVec4(1,1,0,1), "Loading %s...", currentLoadedFile.c_str());
+                ImGui::Separator();
+            }
+
             const auto& info = player.GetMediaInfo();
             if (cropPathNeedsUpdate && !info.recommendedExt.empty()) {
                 std::string stem = fs::path(currentLoadedFile).stem().string();
                 snprintf(cropOutputPath, sizeof(cropOutputPath), "%s_cropped%s", stem.c_str(), info.recommendedExt.c_str());
                 cropPathNeedsUpdate = false;
+                cropEnd = (float)player.GetDuration();
+                cropStart = 0.0f;
+                snprintf(cropStartBuf, sizeof(cropStartBuf), "%s", FormatTime(cropStart).c_str());
+                snprintf(cropEndBuf, sizeof(cropEndBuf), "%s", FormatTime(cropEnd).c_str());
             }
+
             ImGui::Text("Playing: %s [%s / %s]", currentLoadedFile.c_str(), info.container.c_str(), info.codec.c_str());
             ImGui::Separator();
+            
             float bWidth = ImGui::CalcTextSize("Pause").x + ImGui::GetStyle().FramePadding.x * 2.0f;
             if (ImGui::Button(player.IsPlaying() ? "Pause" : "Play", ImVec2(bWidth, 0))) { if (player.IsPlaying()) player.Pause(); else player.Play(); }
             ImGui::SameLine();
@@ -296,70 +316,64 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            const auto& segments = transcript.GetSegments();
-            if (!segments.empty()) {
-                ImGui::Separator();
-                if (showSearch) {
-                    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-                    ImGui::BeginChild("SearchBar", ImVec2(0, ImGui::GetFrameHeightWithSpacing() * 1.5f), true);
-                    if (searchFocusPending) { ImGui::SetKeyboardFocusHere(); searchFocusPending = false; }
-                    ImGui::Text("Find:"); ImGui::SameLine();
-                    if (ImGui::InputText("##search", searchBuffer, sizeof(searchBuffer))) { UpdateSearch(segments, searchBuffer, matchIndices, currentMatchIdx); lastMatchIdx = -1; }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Prev") && !matchIndices.empty()) { currentMatchIdx = (currentMatchIdx - 1 + matchIndices.size()) % matchIndices.size(); player.Seek(segments[matchIndices[currentMatchIdx]].start); }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Next") && !matchIndices.empty()) { currentMatchIdx = (currentMatchIdx + 1) % matchIndices.size(); player.Seek(segments[matchIndices[currentMatchIdx]].start); }
-                    ImGui::SameLine();
-                    if (!matchIndices.empty()) ImGui::Text("%d of %d", currentMatchIdx + 1, (int)matchIndices.size());
-                    else if (strlen(searchBuffer) > 0) ImGui::TextColored(ImVec4(1,0,0,1), "No matches");
-                    ImGui::SameLine(ImGui::GetWindowWidth() - 30);
-                    if (ImGui::Button("X")) showSearch = false;
-                    ImGui::EndChild();
-                    ImGui::PopStyleColor();
-                }
-
-                ImGui::BeginChild("TranscriptList", ImVec2(0, 0), true);
-                if (ImGui::IsMouseClicked(0) && ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()) { selectStart = -1; selectEnd = -1; }
-
-                for (int i = 0; i < (int)segments.size(); ++i) {
-                    const auto& seg = segments[i];
-                    char label[2048];
-                    snprintf(label, sizeof(label), "[ %s -> %s] %s", FormatTime(seg.start).c_str(), FormatTime(seg.end).c_str(), seg.text.c_str());
-                    bool isMatch = std::find(matchIndices.begin(), matchIndices.end(), i) != matchIndices.end();
-                    bool isCurrMatch = (currentMatchIdx != -1 && matchIndices[currentMatchIdx] == i);
-                    bool isSelected = false;
-                    if (selectStart != -1 && selectEnd != -1) {
-                        int s = std::min(selectStart, selectEnd);
-                        int e = std::max(selectStart, selectEnd);
-                        if (i >= s && i <= e) isSelected = true;
+            {
+                std::lock_guard<std::mutex> lock(transcriptMutex);
+                const auto& segments = transcript.GetSegments();
+                if (!segments.empty()) {
+                    ImGui::Separator();
+                    if (showSearch) {
+                        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+                        ImGui::BeginChild("SearchBar", ImVec2(0, ImGui::GetFrameHeightWithSpacing() * 1.5f), true);
+                        if (searchFocusPending) { ImGui::SetKeyboardFocusHere(); searchFocusPending = false; }
+                        ImGui::Text("Find:"); ImGui::SameLine();
+                        if (ImGui::InputText("##search", searchBuffer, sizeof(searchBuffer))) { UpdateSearch(segments, searchBuffer, matchIndices, currentMatchIdx); lastMatchIdx = -1; }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Prev") && !matchIndices.empty()) { currentMatchIdx = (currentMatchIdx - 1 + matchIndices.size()) % matchIndices.size(); player.Seek(segments[matchIndices[currentMatchIdx]].start); }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Next") && !matchIndices.empty()) { currentMatchIdx = (currentMatchIdx + 1) % matchIndices.size(); player.Seek(segments[matchIndices[currentMatchIdx]].start); }
+                        ImGui::SameLine();
+                        if (!matchIndices.empty()) ImGui::Text("%d of %d", currentMatchIdx + 1, (int)matchIndices.size());
+                        else if (strlen(searchBuffer) > 0) ImGui::TextColored(ImVec4(1,0,0,1), "No matches");
+                        ImGui::SameLine(ImGui::GetWindowWidth() - 30);
+                        if (ImGui::Button("X")) showSearch = false;
+                        ImGui::EndChild();
+                        ImGui::PopStyleColor();
                     }
 
-                    if (isCurrMatch) {
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
-                        if (currentMatchIdx != lastMatchIdx) { ImGui::SetScrollHereY(); lastMatchIdx = currentMatchIdx; }
-                    } else if (isMatch) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 1.0f, 1.0f));
-                    if (isSelected) ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.26f, 0.59f, 0.98f, 0.5f));
+                    ImGui::BeginChild("TranscriptList", ImVec2(0, 0), true);
+                    if (ImGui::IsMouseClicked(0) && ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()) { selectStart = -1; selectEnd = -1; }
 
-                    ImGui::Selectable(label, isSelected || isCurrMatch, ImGuiSelectableFlags_AllowOverlap);
-
-                    if (ImGui::IsMouseClicked(0) && ImGui::IsItemHovered()) { selectStart = i; selectEnd = i; }
-                    if (ImGui::IsMouseDragging(0) && ImGui::IsItemHovered()) { selectEnd = i; }
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(0)) {
-                        if (ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 4.0f) {
-                            player.Seek(seg.start);
-                            selectStart = -1; selectEnd = -1; // Clear on simple click
+                    for (int i = 0; i < (int)segments.size(); ++i) {
+                        const auto& seg = segments[i];
+                        char label[2048];
+                        snprintf(label, sizeof(label), "[ %s -> %s] %s", FormatTime(seg.start).c_str(), FormatTime(seg.end).c_str(), seg.text.c_str());
+                        bool isMatch = std::find(matchIndices.begin(), matchIndices.end(), i) != matchIndices.end();
+                        bool isCurrMatch = (currentMatchIdx != -1 && matchIndices[currentMatchIdx] == i);
+                        bool isSelected = false;
+                        if (selectStart != -1 && selectEnd != -1) {
+                            int s = std::min(selectStart, selectEnd);
+                            int e = std::max(selectStart, selectEnd);
+                            if (i >= s && i <= e) isSelected = true;
                         }
+                        if (isCurrMatch) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f)); if (currentMatchIdx != lastMatchIdx) { ImGui::SetScrollHereY(); lastMatchIdx = currentMatchIdx; } }
+                        else if (isMatch) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 1.0f, 1.0f));
+                        if (isSelected) ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.26f, 0.59f, 0.98f, 0.5f));
+                        ImGui::Selectable(label, isSelected || isCurrMatch, ImGuiSelectableFlags_AllowOverlap);
+                        if (ImGui::IsMouseClicked(0) && ImGui::IsItemHovered()) { selectStart = i; selectEnd = i; }
+                        if (ImGui::IsMouseDragging(0) && ImGui::IsItemHovered()) { selectEnd = i; }
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(0)) {
+                            if (ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 4.0f) { player.Seek(seg.start); selectStart = -1; selectEnd = -1; }
+                        }
+                        if (isSelected) ImGui::PopStyleColor();
+                        if (isCurrMatch || isMatch) ImGui::PopStyleColor();
                     }
-
-                    if (isSelected) ImGui::PopStyleColor();
-                    if (isCurrMatch || isMatch) ImGui::PopStyleColor();
+                    if (ImGui::IsMouseReleased(0) && selectStart != -1 && selectStart == selectEnd) { selectStart = -1; selectEnd = -1; }
+                    ImGui::EndChild();
                 }
-                if (ImGui::IsMouseReleased(0) && selectStart != -1 && selectStart == selectEnd) { selectStart = -1; selectEnd = -1; }
-                ImGui::EndChild();
             }
         } else ImGui::Text("Select an audio file from the sidebar to begin.");
         ImGui::EndGroup();
-        ImGui::PopFont();
+        if (g_MainFont) ImGui::PopFont();
         ImGui::End();
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 45, 45, 45, 255);
