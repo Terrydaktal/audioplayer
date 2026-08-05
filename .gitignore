@@ -1,3 +1,4 @@
 build/
+rust/fuzzy_rank_bridge/target/
 external/
 *.ini

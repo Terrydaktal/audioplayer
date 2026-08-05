@@ -1,6 +1,6 @@
 # Interactive Audio Player with Transcript & Cropping
 
-A high-performance, interactive C++ audio player designed for navigating long recordings with JSON transcripts. Built with SDL2, Dear ImGui, and FFmpeg.
+A high-performance, interactive C++ audio player designed for navigating long recordings with SQLite-backed transcripts. Built with SDL2, Dear ImGui, and FFmpeg.
 
 ## 🚀 Key Features
 
@@ -9,6 +9,7 @@ A high-performance, interactive C++ audio player designed for navigating long re
 - **Advanced Transcript Interface**:
   - **Timestamp Navigation**: Click any transcript segment to jump the audio to that exact moment.
   - **Ctrl+F Search**: Live search with match cycling, cyan highlighting, and automatic scrolling to results.
+  - **Indexed Global Search**: SQLite FTS5 retrieves timestamped transcript segments, expands nearby hits into context windows, and the exact `transcript-window` adapter uses fuzzy-rank's `message` adapter to order them.
   - **Drag-to-Copy**: Highlight ranges of the transcript by dragging your mouse and use `Ctrl+C` to copy high-precision timestamped text.
 - **Smart Cropping**: FFmpeg-powered cropping logic that automatically detects if it can perform a **Lossless Copy** (if formats match) or a **High-Quality Re-encode** (if converting formats).
 - **Responsive UI/UX**:
@@ -22,11 +23,17 @@ A high-performance, interactive C++ audio player designed for navigating long re
 /
 ├── CMakeLists.txt          # Build configuration
 ├── src/
-│   ├── main.cpp            # UI logic and application loop
-│   ├── audio_player.cpp/h  # Async FFmpeg-based audio engine
-│   ├── transcript.cpp/h    # JSON transcript parser
-│   ├── ffmpeg_utils.h      # Cropping and command helpers
-│   └── test_transcript.cpp # Unit tests for parser
+│   ├── main.cpp                   # CLI options and process entry point
+│   ├── app/                       # Application lifecycle, state, and worker orchestration
+│   ├── audio/                     # Playback, FFmpeg process, media probe, and crop services
+│   ├── core/                      # Shared time formatting and parsing
+│   ├── platform/                  # Font discovery and filesystem/audio-folder helpers
+│   ├── transcripts/                # Public transcript API, JSON/SQLite loading, FTS search, ranking
+│   ├── ui/                        # Menu bar, sidebar, player, global-search, and event views
+│   ├── fuzzy_rank_bridge.h         # C ABI for the Rust relevance ranker
+│   ├── ffmpeg_utils.h              # Backward-compatible crop wrapper
+│   └── test_transcript.cpp         # Transcript/database behavior tests
+├── rust/fuzzy_rank_bridge/ # Static Rust bridge to ../fuzzy-rank
 ├── external/               # Header-only dependencies (miniaudio, json, imgui)
 └── build/                  # Build artifacts (ignored)
 ```
@@ -38,6 +45,19 @@ Ensure you have the following installed on your Linux system:
 - **GCC/G++** (v11+ for C++17 support)
 - **SDL2 Development Libraries**: `sudo apt install libsdl2-dev`
 - **FFmpeg**: `sudo apt install ffmpeg`
+- **Rust/Cargo** and the sibling `~/Dev/fuzzy-rank` crate
+- **SQLite 3** built with FTS5 support
+
+The SQLite database is the source of truth for search and transcript viewing.
+`diarise --database PATH` writes transcript metadata and normalized
+`segments(start_time, end_time, text)` rows directly to it, while SQLite FTS5
+maintains a trigram index for fast global substring search. Legacy JSON files are
+still imported when present, but are not required: selecting a database-only
+result loads its segments from SQLite even when the recording and JSON file are
+missing. Search anchors are grouped into overlapping windows of nearby segments
+before the exact `fuzzy-rank` message adapter ranks them. Recording timestamps
+come from each transcript's `anchor_time` metadata, with the audio-file mtime
+used only as a fallback when that metadata is absent.
 
 ## 🔨 Build Instructions
 
