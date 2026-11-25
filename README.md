@@ -47,6 +47,7 @@ Ensure you have the following installed on your Linux system:
 - **FFmpeg**: `sudo apt install ffmpeg`
 - **Rust/Cargo** and the sibling `~/Dev/fuzzy-rank` crate
 - **SQLite 3** built with FTS5 support
+- **OpenSSL/libcrypto** (used for transcript fingerprints)
 
 The SQLite database is the source of truth for search and transcript viewing.
 `diarise --database PATH` writes transcript metadata and normalized
@@ -54,10 +55,17 @@ The SQLite database is the source of truth for search and transcript viewing.
 maintains a trigram index for fast global substring search. Legacy JSON files are
 still imported when present, but are not required: selecting a database-only
 result loads its segments from SQLite even when the recording and JSON file are
-missing. Search anchors are grouped into overlapping windows of nearby segments
-before the exact `fuzzy-rank` message adapter ranks them. Recording timestamps
-come from each transcript's `anchor_time` metadata, with the audio-file mtime
-used only as a fallback when that metadata is absent.
+missing. Imports cache nanosecond source stats, a normalized segment-content
+fingerprint, and the complete JSON metadata apart from the repeated `segments`
+array. A metadata-only JSON change updates the metadata without rebuilding the
+segments or FTS index; duplicate content is recognized even when the JSON
+metadata or filename differs, and direct database rows from `diarise` remain
+authoritative. Sync is additive/update-only: removing a JSON source does not
+remove its database transcript, so database-only viewing and search remain
+available. Search anchors are grouped into overlapping windows of nearby
+segments before the exact `fuzzy-rank` message adapter ranks them. Recording
+timestamps come from each transcript's `anchor_time` metadata, with the
+audio-file mtime used only as a fallback when that metadata is absent.
 
 ## 🔨 Build Instructions
 

@@ -3,9 +3,42 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+
+#include <sqlite3.h>
+
 #include "transcript.h"
 
 namespace fs = std::filesystem;
+
+int DatabaseCount(const std::string& databasePath, const char* table) {
+    sqlite3* database = nullptr;
+    assert(sqlite3_open_v2(databasePath.c_str(), &database, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    const std::string query = std::string("SELECT COUNT(*) FROM ") + table + ";";
+    sqlite3_stmt* statement = nullptr;
+    assert(sqlite3_prepare_v2(database, query.c_str(), -1, &statement, nullptr) == SQLITE_OK);
+    assert(sqlite3_step(statement) == SQLITE_ROW);
+    const int count = sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return count;
+}
+
+std::string DatabaseMetadata(const std::string& databasePath) {
+    sqlite3* database = nullptr;
+    assert(sqlite3_open_v2(databasePath.c_str(), &database, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* statement = nullptr;
+    assert(sqlite3_prepare_v2(database,
+                              "SELECT metadata_json FROM transcripts WHERE filename = ?;",
+                              -1, &statement, nullptr) == SQLITE_OK);
+    const std::string filename = "test_mp3_whisper_large-v3.json";
+    sqlite3_bind_text(statement, 1, filename.c_str(), -1, SQLITE_TRANSIENT);
+    assert(sqlite3_step(statement) == SQLITE_ROW);
+    const unsigned char* value = sqlite3_column_text(statement, 0);
+    const std::string metadata = value ? reinterpret_cast<const char*>(value) : std::string();
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return metadata;
+}
 
 int main() {
     // Create mock directory and transcript
@@ -17,6 +50,7 @@ int main() {
       "anchor_time_src": "earliest:modify",
       "anchor_time_assumed": "end_of_recording",
       "anchor_time_uncertain": false,
+      "language": "en",
       "segments": [
         {"start": 5.5, "end": 10.0, "text": "Segment 1"},
         {"start": 10.0, "end": 15.2, "text": "Segment 2"}
@@ -73,7 +107,37 @@ int main() {
 
     // The transcript remains searchable even though test.mp3 does not exist.
     SyncTranscriptDatabase("mock_transcripts");
+    SyncTranscriptDatabase("mock_transcripts");
+    assert(DatabaseCount("mock_transcripts/transcripts.db", "transcripts") == 5);
+    assert(DatabaseCount("mock_transcripts/transcripts.db", "segments") == 11);
+
+    // A metadata-only edit updates the metadata without duplicating or rebuilding segments.
+    std::ofstream metadataOnlyFile("mock_transcripts/test_mp3_whisper_large-v3.json");
+    metadataOnlyFile << R"({
+      "anchor_time": "2021-07-22T15:53:15+01:00",
+      "anchor_time_src": "metadata-only-test",
+      "anchor_time_assumed": "end_of_recording",
+      "anchor_time_uncertain": true,
+      "language": "en",
+      "metadata_only_marker": "preserved",
+      "segments": [
+        {"start": 5.5, "end": 10.0, "text": "Segment 1"},
+        {"start": 10.0, "end": 15.2, "text": "Segment 2"}
+      ]
+    })";
+    metadataOnlyFile.close();
+    SyncTranscriptDatabase("mock_transcripts");
+    assert(DatabaseCount("mock_transcripts/transcripts.db", "transcripts") == 5);
+    assert(DatabaseCount("mock_transcripts/transcripts.db", "segments") == 11);
+    assert(DatabaseMetadata("mock_transcripts/transcripts.db").find("metadata_only_marker") != std::string::npos);
+
+    auto metadataResults = SearchAllTranscripts("mock_transcripts", "Segment 1");
+    assert(!metadataResults.empty());
+    assert(metadataResults[0].recordingTime == "2021-07-22T15:53:15+01:00");
+    assert(metadataResults[0].recordingTimeUncertain);
+
     fs::remove("mock_transcripts/test_mp3_whisper_large-v3.json");
+    SyncTranscriptDatabase("mock_transcripts");
     TranscriptHandler databaseOnlyHandler;
     assert(databaseOnlyHandler.Load("test.mp3", "mock_transcripts"));
     assert(databaseOnlyHandler.GetSegments().size() == 2);
@@ -83,8 +147,8 @@ int main() {
     assert(!searchResults.empty());
     assert(searchResults[0].audioFilename == "test.mp3");
     assert(searchResults[0].transcriptFilename == "test_mp3_whisper_large-v3.json");
-    assert(searchResults[0].recordingTime == "2020-06-21T14:52:14+01:00");
-    assert(!searchResults[0].recordingTimeUncertain);
+    assert(searchResults[0].recordingTime == "2021-07-22T15:53:15+01:00");
+    assert(searchResults[0].recordingTimeUncertain);
     assert(searchResults[0].text.find("Segment 1") != std::string::npos);
     assert(searchResults[0].text.find("Segment 2") != std::string::npos);
 

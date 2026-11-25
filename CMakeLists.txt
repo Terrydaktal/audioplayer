@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find SDL2
 find_package(SDL2 REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_program(CARGO_EXECUTABLE cargo)
 if(NOT CARGO_EXECUTABLE)
     message(FATAL_ERROR "cargo is required to build the fuzzy-rank bridge")
@@ -69,6 +70,7 @@ add_executable(audioplayer
     src/platform/filesystem_utils.cpp
     src/platform/font_manager.cpp
     src/transcripts/transcript_database.cpp
+    src/transcripts/transcript_fingerprint.cpp
     src/transcripts/transcript_loader.cpp
     src/transcripts/transcript_search.cpp
     src/ui/global_search_view.cpp
@@ -82,6 +84,7 @@ add_executable(audioplayer
 add_executable(test_transcript
     src/test_transcript.cpp
     src/transcripts/transcript_database.cpp
+    src/transcripts/transcript_fingerprint.cpp
     src/transcripts/transcript_loader.cpp
     src/transcripts/transcript_search.cpp
 )
@@ -95,6 +98,7 @@ target_link_libraries(audioplayer
     pthread
     m
     sqlite3
+    OpenSSL::Crypto
     "${FUZZY_BRIDGE_LIBRARY}"
 )
 
@@ -103,5 +107,6 @@ target_link_libraries(test_transcript
     dl
     m
     sqlite3
+    OpenSSL::Crypto
     "${FUZZY_BRIDGE_LIBRARY}"
 )
