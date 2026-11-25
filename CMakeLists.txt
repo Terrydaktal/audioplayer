@@ -110,3 +110,6 @@ target_link_libraries(test_transcript
     OpenSSL::Crypto
     "${FUZZY_BRIDGE_LIBRARY}"
 )
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/build-support/AppVersion.cmake")
+app_version_enable(GUI_TARGETS audioplayer)

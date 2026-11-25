@@ -2,3 +2,7 @@ build/
 rust/fuzzy_rank_bridge/target/
 external/
 *.ini
+
+# Generated application build versions.
+/.app-version/
+/build-support/__pycache__/

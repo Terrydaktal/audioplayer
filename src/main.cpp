@@ -1,3 +1,6 @@
+#ifdef APP_VERSION_BUILD
+#include "app_version.h"
+#endif
 #include <iostream>
 #include <string>
 
@@ -40,6 +43,9 @@ void PrintHelp() {
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef APP_VERSION_BUILD
+    app_version::handle_cli(argc, argv);
+#endif
     bool daemonize = true;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
