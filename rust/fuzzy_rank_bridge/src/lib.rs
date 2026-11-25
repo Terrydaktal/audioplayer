@@ -2,7 +2,7 @@ use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::slice;
 
-use fuzzy_rank::message::{MessageCandidate, MessageField, MessageQuery, sort_matches};
+use fuzzy_rank::fields::literal::{MessageCandidate, MessageField, MessageQuery, select_top_k};
 
 #[repr(C)]
 pub struct FuzzyRankCandidate {
@@ -65,8 +65,8 @@ fn rank_exact_candidates(
         }
     }
 
-    sort_matches(&mut matches);
-    let output_count = matches.len().min(output_capacity);
+    select_top_k(&mut matches, output_capacity);
+    let output_count = matches.len();
     let output = unsafe { slice::from_raw_parts_mut(output_indices, output_capacity) };
     for (slot, matched) in output.iter_mut().zip(matches.iter()).take(output_count) {
         if let Ok(index) = matched.key.parse::<usize>() {
